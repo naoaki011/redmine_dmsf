@@ -173,6 +173,7 @@ ja:
   :label_target_folder: "ターゲットフォルダ"
   :title_copy_or_move: "コピー/移動"
   :label_dmsf_folder_plural: "Dmsf フォルダ"
+  :DMSF_custom_field: "DMSF"
   
 #Not translated
   :comment_moved_from: "%{source} から移動しました"
