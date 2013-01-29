@@ -17,11 +17,11 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 begin
-  require 'xapian'
-  $xapian_bindings_available = true
+  require 'estraier'
+  $estraier_bindings_available = true
 rescue LoadError
-  Rails.logger.info "REDMAIN_XAPIAN ERROR: No Ruby bindings for Xapian installed !!. PLEASE install Xapian search engine interface for Ruby."
-  $xapian_bindings_available = false
+  Rails.logger.info "REDMAIN_ESTRAIER ERROR: No Ruby bindings for Estraier installed !!. PLEASE install Hyper Estraier search engine interface for Ruby."
+  $estraier_bindings_available = false
 end
 
 class DmsfFile < ActiveRecord::Base
@@ -308,51 +308,40 @@ class DmsfFile < ActiveRecord::Base
       end
     end
     
-    if !options[:titles_only] && $xapian_bindings_available
+    if !options[:titles_only] && $estraier_bindings_available
       database = nil
       begin
-        database = Xapian::Database.new(Setting.plugin_redmine_dmsf["dmsf_index_database"].strip)
+        database = Estraier::Database::new
+        database.open(Setting.plugin_redmine_dmsf["dmsf_index_database"].strip, Estraier::Database::DBREADER) 
       rescue
-        Rails.logger.warn "REDMAIN_XAPIAN ERROR: Xapian database is not properly set or initiated or is corrupted."
+        Rails.logger.warn "REDMAIN_ESTRAIER ERROR: Estraier database is not properly set or initiated or is corrupted."
       end
 
       unless database.nil?
-        enquire = Xapian::Enquire.new(database)
+        # create a search condition object
+        cond = Estraier::Condition::new
         
-        queryString = tokens.join(' ')
-        qp = Xapian::QueryParser.new()
-        stemmer = Xapian::Stem.new(Setting.plugin_redmine_dmsf['dmsf_stemming_lang'].strip)
-        qp.stemmer = stemmer
-        qp.database = database
-        
-        case Setting.plugin_redmine_dmsf['dmsf_stemming_strategy'].strip
-          when "STEM_NONE" then qp.stemming_strategy = Xapian::QueryParser::STEM_NONE
-          when "STEM_SOME" then qp.stemming_strategy = Xapian::QueryParser::STEM_SOME
-          when "STEM_ALL" then qp.stemming_strategy = Xapian::QueryParser::STEM_ALL
-        end
-      
-        if options[:all_words]
-          qp.default_op = Xapian::Query::OP_AND
-        else  
-          qp.default_op = Xapian::Query::OP_OR
-        end
-        
-        query = qp.parse_query(queryString)
-  
-        enquire.query = query
-        matchset = enquire.mset(0, 1000)
-    
-        unless matchset.nil?
-          matchset.matches.each {|m|
-            docdata = m.document.data{url}
-            dochash = Hash[*docdata.scan(/(url|sample|modtime|type|size)=\/?([^\n\]]+)/).flatten]
-            filename = dochash["url"]
-            if !filename.nil?
-              dmsf_attrs = filename.scan(/^([^\/]+\/[^_]+)_([\d]+)_(.*)$/)
-              id_attribute = 0
-              id_attribute = dmsf_attrs[0][1] if dmsf_attrs.length > 0
-              next if dmsf_attrs.length == 0 || id_attribute == 0
-              next unless results.select{|f| f.id.to_s == id_attribute}.empty?
+        # set the search phrase to the search condition object
+        queryString = tokens.join(options[:all_words] ? ' AND ': ' OR ')
+        cond.set_phrase(queryString )
+
+        # get the result of search
+        result = database.search(cond)
+
+        if result
+          # for each document in the result
+          dnum = result.doc_num
+          for i in 0...dnum
+            # retrieve the document object
+            doc = database.get_doc(result.get_doc_id(i), 0)
+            next unless doc
+            # display attributes
+            uri = doc.attr("@uri")
+            if uri
+              filename = uri.sub(/.*\//, '')
+              dmsf_attrs = filename.split("_")
+              next if dmsf_attrs[1].blank?
+              next unless results.select{|f| f.id.to_s == dmsf_attrs[1]}.empty?
               
               dmsf_file = DmsfFile.where(limit_options[:conditions]).where(:id => id_attribute, :deleted => false).first
     
@@ -368,14 +357,10 @@ class DmsfFile < ActiveRecord::Base
                 allowed = User.current.allowed_to?(:view_dmsf_files, dmsf_file.project)
                 project_included = false
                 project_included = true if projects.nil?
-                unless project_included                  
-                  projects.each do |x| 
-                    if x.is_a?(ActiveRecord::Relation)
-                      project_included = x.first.id == dmsf_file.project.id        
-                    else
-                      project_included = x[:id] == dmsf_file.project.id
-                    end
-                  end
+                if !project_included
+                  projects.each {|x| 
+                    project_included = true if x[:id] == dmsf_file.project.id
+                  }
                 end
   
                 if (allowed && project_included)
@@ -384,9 +369,14 @@ class DmsfFile < ActiveRecord::Base
                 end
               end
             end
-          }
         end
       end    
+
+        # close the database
+        unless database.close
+          Rails.logger.warn(database.err_msg(database.error))
+        end
+      end # unless database.nil?
     end
     
     [results, results_count]
